@@ -4,6 +4,8 @@
 
 See your PC's live stats and **open, switch to, or close any app on it** straight from your phone. No internet, no account, no cloud — your phone and PC just talk to each other on your local network.
 
+<p align="center"><b><a href="../../releases/latest">⬇&nbsp; Download for Android &amp; Windows</a></b></p>
+
 <table>
   <tr>
     <td align="center" width="33%"><img src="screenshots/home.png" width="230"/><br/><sub><b>Live stats + your apps</b></sub></td>
