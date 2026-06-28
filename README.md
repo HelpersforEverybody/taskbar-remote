@@ -1,121 +1,103 @@
-# Taskbar Remote
+# ⚡ Taskbar Remote
 
-Control and monitor your Windows PC from your Android phone over your local network — no cloud, no account.
+**Control your Windows PC from your Android phone — over your own Wi-Fi.**
 
-Taskbar Remote shows live **CPU / RAM / Wi-Fi** from your PC and lets you **launch, switch to, and close** any of your Start Menu apps right from your phone. It's built around a precision-instrument UI (segmented LED meters, mono telemetry readouts) and works fully wireless over Wi-Fi or a phone hotspot.
+See your PC's live stats and **open, switch to, or close any app on it** straight from your phone. No internet, no account, no cloud — your phone and PC just talk to each other on your local network.
 
-> Personal project. Phone ⇄ PC talk directly over your LAN; nothing leaves your network.
+<table>
+  <tr>
+    <td align="center" width="33%"><img src="screenshots/home.png" width="230"/><br/><sub><b>Live stats + your apps</b></sub></td>
+    <td align="center" width="33%"><img src="screenshots/quick.png" width="230"/><br/><sub><b>Quick — pinned apps</b></sub></td>
+    <td align="center" width="33%"><img src="screenshots/add.png" width="230"/><br/><sub><b>Add apps to Quick</b></sub></td>
+  </tr>
+</table>
+
+The small companion app that runs on your PC:
+
+<p align="center"><img src="screenshots/desktop.png" width="560"/></p>
 
 ---
 
-## Features
+## What you can do
 
-- **Live system telemetry** — CPU and RAM as segmented LED meters, Wi-Fi SSID + signal, temperature (when the PC exposes a sensor).
-- **Launch PC apps** — every Start Menu shortcut, searchable from the phone.
-- **Switch instead of duplicate** — tapping an already-open app brings its window to the front instead of opening a second copy.
-- **Close from your phone** — gracefully close a running app on the PC (it can still prompt to save).
-- **Quick page** — pin favourite apps to a full-page grid; a green dot + **Close** appears on the ones currently running.
-- **Real app icons** — extracted from the PC and shown on the phone.
-- **Token-secured** — a per-phone random token gates the connection.
-- **Fully wireless** — works over normal Wi-Fi or the phone's own hotspot.
+- 📊 **See your PC at a glance** — live CPU, RAM, and Wi-Fi.
+- 🚀 **Open any PC app from your phone** — just search and tap.
+- 🔁 **Already open? It switches to it** — taps bring the window to the front instead of opening a second copy.
+- ❌ **Close a PC app from your phone** — running apps show a green dot and a Close button.
+- ⭐ **Quick page** — pin your favourite apps for one-tap access.
+- 🎨 **Real app icons** pulled straight from your PC.
+
+---
+
+## How to set it up
+
+It takes about a minute, and you only do it once.
+
+1. **Install the phone app** and open it. It shows a **Phone IP** and a **Token**.
+2. **On your PC, run Taskbar Remote.** Type in that IP and token, then click **Connect**.
+   *(Optional: click **Install on this PC** so it starts automatically with Windows.)*
+3. That's it — your phone now shows your PC and all its apps. ✅
+
+> **Both devices just need to be on the same Wi-Fi** — your home Wi-Fi works, and so does your phone's own hotspot.
 
 ---
 
 ## How it works
 
-The phone is the **server**; the PC agent is the **client** that connects to it.
+Your phone and PC talk **directly to each other over your local Wi-Fi** — nothing goes through the internet or any server.
 
-```
-┌─────────────┐      Wi-Fi / hotspot LAN       ┌──────────────────┐
-│  Android    │  ws://<phone-ip>:8765/agent    │  Windows PC      │
-│  app        │ ◀───────────────────────────── │  agent (client)  │
-│  (server)   │  apps · icons · metrics ─────▶ │                  │
-│             │  ◀──── launch / close / fav     │  PowerShell/WMI  │
-└─────────────┘                                 └──────────────────┘
-```
-
-**Why this direction?** When the phone is acting as a Wi-Fi hotspot, an app on the host phone can't reach connected devices directly (Android routes its sockets out the cellular link). The PC *can* always reach the phone, so the PC connects to the phone. This makes it work over a phone hotspot with no extra setup.
-
-The agent reads metrics and enumerates/launches apps using built-in Windows tooling (PowerShell, WMI, performance counters, `System.Drawing` for icons). The phone never runs anything on the PC except the apps you tap.
+A tiny program (the "agent") runs on your PC. It reads basic system info and opens/closes apps when you tap them on your phone. The phone shows everything and sends your commands. The PC connects out to the phone, which is what lets it work even over your phone's hotspot.
 
 ---
 
-## Project structure
+## Privacy & security
 
-| Path | What it is |
-|---|---|
-| `lib/main.dart` | The Android app (Flutter) — UI + WebSocket server |
-| `bin/pc_agent.dart` | The PC agent (Dart console client) |
-| `windows-agent/TaskbarRemote.cs` | A Windows tray app (C#/WinForms) that wraps the agent with a window, system-tray icon, and an installer |
-| `assets/fonts/` | Space Grotesk + Space Mono (SIL OFL) |
-| `android/` | Android build config |
+- 🔒 **Local only** — it works on your network; nothing leaves it and nothing is uploaded.
+- 🔑 **Token-protected** — a random token (like a password) is required to connect, so a random device can't control your PC.
+- The PC app only ever opens your normal Start Menu apps and reads system stats.
+
+Use it on your own Wi-Fi or hotspot. (Like most LAN tools, avoid untrusted public Wi-Fi.)
 
 ---
 
-## Build it yourself
+## For developers — build from source
 
-### Prerequisites
-- [Flutter](https://flutter.dev) 3.44+ (Dart 3.12+)
-- Android SDK (platform + build-tools)
-- A JDK 17–21 (the one bundled with Android Studio works)
-- Windows 10/11 for the PC agent
+<details>
+<summary>Build steps</summary>
 
-### Android app (APK)
+**Needs:** [Flutter](https://flutter.dev) 3.44+, the Android SDK, a JDK 17–21 (the one in Android Studio is fine), and Windows for the PC side.
+
+**Phone app (APK):**
 ```bash
 flutter pub get
-flutter build apk --release
-# -> build/app/outputs/flutter-apk/app-release.apk
-```
-Install it on the phone (`adb install -r <apk>` or copy + tap).
-
-### PC agent (standalone .exe, no Dart needed to run)
-```bash
-dart build cli                 # -> build/cli/windows_x64/bundle/bin/pc_agent.exe
-```
-Or run it directly during development:
-```bash
-dart run bin/pc_agent.dart --host <phone-ip> --port 8765 --token <token>
+flutter build apk --release        # -> build/app/outputs/flutter-apk/app-release.apk
 ```
 
-### Windows tray app (single self-installing .exe)
-The C# tray app embeds the agent and gives you a real window + system-tray + installer. Build with the .NET Framework compiler (no SDK needed):
+**PC agent (standalone .exe):**
+```bash
+dart build cli                     # -> build/cli/windows_x64/bundle/bin/pc_agent.exe
+```
+
+**Windows desktop app** (single self-installing .exe — embeds the agent), built with the built-in .NET Framework compiler:
 ```bat
-csc /target:winexe /out:TaskbarRemote.exe ^
-    /win32icon:windows-agent\app.ico ^
+csc /target:winexe /out:TaskbarRemote.exe /win32icon:windows-agent\app.ico ^
     /resource:build\taskbar-agent.exe,agent ^
     /reference:System.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll ^
     windows-agent\TaskbarRemote.cs
 ```
-(`taskbar-agent.exe` is the compiled agent from the step above, renamed.)
+
+| Path | What it is |
+|---|---|
+| `lib/main.dart` | The Android app (Flutter) |
+| `bin/pc_agent.dart` | The PC agent (Dart) |
+| `windows-agent/TaskbarRemote.cs` | The Windows desktop app (C#/WinForms) |
+
+</details>
 
 ---
 
-## Using it
-
-1. **PC and phone on the same network** — a normal Wi-Fi router, or the phone's hotspot.
-2. **Open the app on the phone.** It shows its **Phone IP** and a **Token**.
-3. **Run the agent on the PC** — `TaskbarRemote.exe`, then enter the phone's IP + token (it remembers them). Click **Install on this PC** to add it to the Start Menu and start it with Windows.
-4. The phone flips to **LINKED** and starts showing live data and your apps.
-
-The token is generated once per phone and saved, so you only set it up once.
-
-### Wireless tip (phone hotspot)
-Connect the laptop to the phone's hotspot, open the app, run the agent — done. The PC reaches the phone at the hotspot gateway IP.
-
----
-
-## Security
-
-- The connection is gated by a **random per-phone token** (rejected with `401` without it).
-- Traffic is **plain WebSocket over your LAN** — fine on your own network/hotspot; avoid using it on untrusted public Wi-Fi (the token would travel in cleartext).
-- Anyone with the token (and on the same network) can launch/close apps on the PC, so treat it like a password. The agent only ever runs Start Menu apps and reads system metrics.
-
----
-
-## Tech
-
-Flutter/Dart · Dart console agent · C#/WinForms tray app · WebSockets · PowerShell + WMI + performance counters · `System.Drawing` icon extraction.
+Built with Flutter, Dart, and a little C#. Fonts: Space Grotesk + Space Mono (SIL OFL).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Bundled fonts (Space Grotesk, Space Mono) are licensed under the SIL Open Font License.
+[MIT](LICENSE) — free to use, change, and share.
