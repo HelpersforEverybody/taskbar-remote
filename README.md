@@ -98,6 +98,12 @@ csc /target:winexe /out:TaskbarRemote.exe /win32icon:windows-agent\app.ico ^
 
 ---
 
+## Feedback & ideas
+
+Have a question, found a bug, or want a new feature? You're welcome to **[open an issue](../../issues/new/choose)** or start a **[discussion](../../discussions)** — all feedback is appreciated.
+
+---
+
 Built with Flutter, Dart, and a little C#. Fonts: Space Grotesk + Space Mono (SIL OFL).
 
 ## License

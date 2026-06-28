@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions & ideas (Discussions)
+    url: https://github.com/HelpersforEverybody/taskbar-remote/discussions
+    about: Have a general question or want to chat? Start a discussion here.
