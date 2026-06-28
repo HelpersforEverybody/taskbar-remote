@@ -81,6 +81,7 @@ dart run bin/pc_agent.dart --host <phone-ip> --port 8765 --token <token>
 The C# tray app embeds the agent and gives you a real window + system-tray + installer. Build with the .NET Framework compiler (no SDK needed):
 ```bat
 csc /target:winexe /out:TaskbarRemote.exe ^
+    /win32icon:windows-agent\app.ico ^
     /resource:build\taskbar-agent.exe,agent ^
     /reference:System.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll ^
     windows-agent\TaskbarRemote.cs
