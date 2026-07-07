@@ -25,6 +25,8 @@ The small companion app that runs on your PC:
 - 📊 **See your PC at a glance** — live CPU, RAM, and Wi-Fi.
 - 🚀 **Open any PC app from your phone** — just search and tap.
 - 🔁 **Already open? It switches to it** — taps bring the window to the front instead of opening a second copy.
+- 🖥️ **See an app's live screen on your phone** — long-press an app (or tap its screen icon) to watch its window live, straight from the PC. Pinch to zoom.
+- 🟢 **See everything that's open** — a **Running** list shows every open window (each browser or terminal window on its own), so you can view or close any single one.
 - ❌ **Close a PC app from your phone** — running apps show a green dot and a Close button.
 - ⭐ **Quick page** — pin your favourite apps for one-tap access.
 - 🎨 **Real app icons** pulled straight from your PC.

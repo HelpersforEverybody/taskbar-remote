@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -78,7 +78,14 @@ class _RemoteHomePageState extends State<RemoteHomePage> {
   final Map<String, Uint8List> _icons = {};
   Set<String> _favorites = {};
   Set<String> _running = {};
+  List<WinItem> _windows = [];
+  final Map<String, Uint8List> _winIcons = {};
   String _query = '';
+
+  // Live view: latest screenshot frame + status, updated without a full
+  // rebuild so the home page stays cheap while a stream is running.
+  final ValueNotifier<Uint8List?> _frame = ValueNotifier<Uint8List?>(null);
+  final ValueNotifier<String> _viewStatus = ValueNotifier<String>('waiting');
 
   @override
   void initState() {
@@ -95,6 +102,8 @@ class _RemoteHomePageState extends State<RemoteHomePage> {
     _server?.close(force: true);
     _searchController.dispose();
     _rev.dispose();
+    _frame.dispose();
+    _viewStatus.dispose();
     super.dispose();
   }
 
@@ -189,6 +198,39 @@ class _RemoteHomePageState extends State<RemoteHomePage> {
         final ids =
             (message['ids'] as List? ?? const []).map((e) => '$e').toSet();
         _update(() => _running = ids);
+      } else if (type == 'windows') {
+        final items = (message['items'] as List? ?? const [])
+            .whereType<Map>()
+            .map((e) => WinItem.fromJson(e.cast<String, dynamic>()))
+            .toList();
+        _update(() => _windows = items);
+      } else if (type == 'winIcons') {
+        final raw = (message['icons'] as Map?) ?? const {};
+        final decoded = <String, Uint8List>{};
+        raw.forEach((key, value) {
+          if (value is String) {
+            try {
+              decoded['$key'] = base64Decode(value);
+            } catch (_) {}
+          }
+        });
+        _update(() => _winIcons.addAll(decoded));
+      } else if (type == 'frame') {
+        final data = message['data'];
+        if (data is String) {
+          try {
+            _frame.value = base64Decode(data);
+            _viewStatus.value = 'live';
+          } catch (_) {}
+        }
+      } else if (type == 'viewStatus') {
+        final status = '${message['status'] ?? ''}';
+        if (status == 'nowindow') {
+          _viewStatus.value = 'opening';
+        } else if (status == 'error') {
+          _viewStatus.value = 'error';
+          _toast('Screen view: ${message['message'] ?? 'error'}');
+        }
       } else if (type == 'launchResult') {
         final appName = message['name'] ?? 'App';
         final ok = message['ok'] == true;
@@ -271,9 +313,60 @@ class _RemoteHomePageState extends State<RemoteHomePage> {
           onLaunch: _launch,
           onClose: _closeApp,
           onToggleFavorite: _toggleFavorite,
+          onView: _openScreenView,
         ),
       ),
     );
+  }
+
+  void _openRunningPage() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => RunningPage(
+          revision: _rev,
+          windows: () => _windows,
+          appForId: (id) => _apps.where((a) => a.id == id).firstOrNull,
+          winIcon: (path) => path == null ? null : _winIcons[path],
+          isFavorite: (id) => _favorites.contains(id),
+          iconBuilder: _appIcon,
+          onToggleFavorite: _toggleFavorite,
+          onWindowView: _openWindowView,
+          onWindowClose: _closeWindow,
+        ),
+      ),
+    );
+  }
+
+  void _openScreenView(RemoteApp app) =>
+      _pushViewPage(app.name, {'type': 'startView', 'id': app.id});
+
+  void _openWindowView(WinItem w) => _pushViewPage(
+      w.title.isEmpty ? _prettyProc(w.proc) : w.title,
+      {'type': 'startView', 'hwnd': w.hwnd});
+
+  void _closeWindow(WinItem w) {
+    _send({'type': 'close', 'hwnd': w.hwnd});
+    _toast('Closing ${w.title.isEmpty ? _prettyProc(w.proc) : w.title}…');
+  }
+
+  void _pushViewPage(String title, Map<String, dynamic> startMsg) {
+    final socket = _agent;
+    if (socket == null || socket.readyState != WebSocket.open) {
+      _toast('PC is not connected yet.');
+      return;
+    }
+    _frame.value = null;
+    _viewStatus.value = 'opening';
+    _send(startMsg);
+    Navigator.of(context)
+        .push(MaterialPageRoute<void>(
+          builder: (_) => ScreenViewPage(
+            title: title,
+            frame: _frame,
+            status: _viewStatus,
+          ),
+        ))
+        .then((_) => _send({'type': 'stopView'}));
   }
 
   Future<String> _loadOrCreateToken() async {
@@ -328,7 +421,13 @@ class _RemoteHomePageState extends State<RemoteHomePage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _Header(connected: _connected, ip: _myIp, onQuick: _openQuickPage),
+            _Header(
+              connected: _connected,
+              ip: _myIp,
+              onQuick: _openQuickPage,
+              onRunning: _openRunningPage,
+              runningCount: _windows.length,
+            ),
             Expanded(
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
@@ -354,6 +453,7 @@ class _RemoteHomePageState extends State<RemoteHomePage> {
                           inQuick: _favorites.contains(app.id),
                           onTap: () => _launch(app),
                           onToggle: () => _toggleFavorite(app),
+                          onView: () => _openScreenView(app),
                         ),
                       ),
                     ),
@@ -370,10 +470,16 @@ class _RemoteHomePageState extends State<RemoteHomePage> {
 // ---------------- Header ----------------
 class _Header extends StatelessWidget {
   const _Header(
-      {required this.connected, required this.ip, required this.onQuick});
+      {required this.connected,
+      required this.ip,
+      required this.onQuick,
+      required this.onRunning,
+      required this.runningCount});
   final bool connected;
   final String ip;
   final VoidCallback onQuick;
+  final VoidCallback onRunning;
+  final int runningCount;
 
   @override
   Widget build(BuildContext context) {
@@ -430,6 +536,52 @@ class _Header extends StatelessWidget {
               ],
             ),
           ),
+          GestureDetector(
+            onTap: onRunning,
+            child: Container(
+              height: 42,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [Color(0xFF12281F), Color(0xFF0D1A15)],
+                ),
+                border: Border.all(color: const Color(0xFF224A3A)),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: runningCount > 0 ? _green : _dim,
+                      boxShadow: runningCount > 0
+                          ? [
+                              BoxShadow(
+                                  color: _green.withValues(alpha: 0.6),
+                                  blurRadius: 6)
+                            ]
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(width: 7),
+                  Text(
+                    '$runningCount',
+                    style: TextStyle(
+                        fontFamily: _mono,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: runningCount > 0 ? _green : _muted),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
           GestureDetector(
             onTap: onQuick,
             child: Container(
@@ -811,17 +963,20 @@ class _AppRow extends StatelessWidget {
     required this.inQuick,
     required this.onTap,
     required this.onToggle,
+    required this.onView,
   });
   final RemoteApp app;
   final Widget icon;
   final bool inQuick;
   final VoidCallback onTap;
   final VoidCallback onToggle;
+  final VoidCallback onView;
 
   @override
   Widget build(BuildContext context) {
     return _Pressable(
       onTap: onTap,
+      onLongPress: onView,
       radius: BorderRadius.circular(11),
       builder: (t) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
@@ -849,6 +1004,12 @@ class _AppRow extends StatelessWidget {
               child: Icon(inQuick ? Icons.check : Icons.add,
                   size: inQuick ? 16 : 17,
                   color: inQuick ? const Color(0xFF1A1206) : _muted),
+            ),
+            const SizedBox(width: 9),
+            _MiniBtn(
+              onTap: onView,
+              child: const Icon(Icons.desktop_windows_outlined,
+                  size: 15, color: _muted),
             ),
             const SizedBox(width: 9),
             _MiniBtn(
@@ -889,9 +1050,13 @@ class _MiniBtn extends StatelessWidget {
 // ---------------- Pressable (guaranteed amber pulse) ----------------
 class _Pressable extends StatefulWidget {
   const _Pressable(
-      {required this.builder, required this.onTap, required this.radius});
+      {required this.builder,
+      required this.onTap,
+      required this.radius,
+      this.onLongPress});
   final Widget Function(double t) builder;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   final BorderRadius radius;
   @override
   State<_Pressable> createState() => _PressableState();
@@ -937,6 +1102,12 @@ class _PressableState extends State<_Pressable>
                 widget.onTap();
                 _pulse();
               },
+              onLongPress: widget.onLongPress == null
+                  ? null
+                  : () {
+                      widget.onLongPress!();
+                      _pulse();
+                    },
               child: widget.builder(t),
             ),
           ),
@@ -959,6 +1130,7 @@ class QuickPage extends StatelessWidget {
     required this.onLaunch,
     required this.onClose,
     required this.onToggleFavorite,
+    required this.onView,
   });
 
   final Listenable revision;
@@ -970,6 +1142,7 @@ class QuickPage extends StatelessWidget {
   final void Function(RemoteApp app) onLaunch;
   final void Function(RemoteApp app) onClose;
   final void Function(RemoteApp app) onToggleFavorite;
+  final void Function(RemoteApp app) onView;
 
   void _openAddSheet(BuildContext context) {
     showModalBottomSheet<void>(
@@ -1035,6 +1208,7 @@ class QuickPage extends StatelessWidget {
                             onTap: () => onLaunch(app),
                             onRemove: () => onToggleFavorite(app),
                             onClose: () => onClose(app),
+                            onView: () => onView(app),
                           )),
                       _AddTile(onTap: () => _openAddSheet(context)),
                     ],
@@ -1057,6 +1231,7 @@ class _QuickTile extends StatelessWidget {
     required this.onTap,
     required this.onRemove,
     required this.onClose,
+    required this.onView,
   });
   final RemoteApp app;
   final Widget icon;
@@ -1064,11 +1239,13 @@ class _QuickTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onRemove;
   final VoidCallback onClose;
+  final VoidCallback onView;
 
   @override
   Widget build(BuildContext context) {
     return _Pressable(
       onTap: onTap,
+      onLongPress: onView,
       radius: BorderRadius.circular(14),
       builder: (t) => Container(
         decoration: BoxDecoration(
@@ -1399,6 +1576,417 @@ class _Toggle extends StatelessWidget {
   }
 }
 
+// ---------------- Running page ----------------
+class RunningPage extends StatelessWidget {
+  const RunningPage({
+    super.key,
+    required this.revision,
+    required this.windows,
+    required this.appForId,
+    required this.winIcon,
+    required this.isFavorite,
+    required this.iconBuilder,
+    required this.onToggleFavorite,
+    required this.onWindowView,
+    required this.onWindowClose,
+  });
+
+  final Listenable revision;
+  final List<WinItem> Function() windows;
+  final RemoteApp? Function(String id) appForId;
+  final Uint8List? Function(String? path) winIcon;
+  final bool Function(String id) isFavorite;
+  final Widget Function(RemoteApp app, double size) iconBuilder;
+  final void Function(RemoteApp app) onToggleFavorite;
+  final void Function(WinItem w) onWindowView;
+  final void Function(WinItem w) onWindowClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(14, 12, 18, 12),
+              decoration: const BoxDecoration(
+                  border: Border(bottom: BorderSide(color: _line))),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.arrow_back, color: _textc),
+                  ),
+                  Container(
+                    width: 8,
+                    height: 8,
+                    margin: const EdgeInsets.only(right: 9),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _green,
+                      boxShadow: [
+                        BoxShadow(
+                            color: _green.withValues(alpha: 0.6),
+                            blurRadius: 7),
+                      ],
+                    ),
+                  ),
+                  const Text('RUNNING',
+                      style: TextStyle(
+                          fontSize: 19,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 1.6,
+                          color: _textc)),
+                ],
+              ),
+            ),
+            Expanded(
+              child: AnimatedBuilder(
+                animation: revision,
+                builder: (context, _) {
+                  // Stable order (grouped by app name, then window title) so the
+                  // list doesn't jump around as windows change focus/z-order.
+                  final wins = List<WinItem>.of(windows());
+                  String nameOf(WinItem w) =>
+                      (w.appId != null ? appForId(w.appId!)?.name : null) ??
+                      _prettyProc(w.proc);
+                  wins.sort((a, b) {
+                    final c = nameOf(a)
+                        .toLowerCase()
+                        .compareTo(nameOf(b).toLowerCase());
+                    return c != 0
+                        ? c
+                        : a.title.toLowerCase().compareTo(b.title.toLowerCase());
+                  });
+                  if (wins.isEmpty) {
+                    return const _RunningEmpty();
+                  }
+                  return ListView(
+                    padding: const EdgeInsets.fromLTRB(18, 16, 18, 24),
+                    children: [
+                      _Eyebrow('Open on your PC · ${wins.length}'),
+                      const SizedBox(height: 10),
+                      ...wins.map((w) {
+                        final app =
+                            w.appId == null ? null : appForId(w.appId!);
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: _WindowRow(
+                            win: w,
+                            name: app?.name ?? _prettyProc(w.proc),
+                            icon: app != null
+                                ? iconBuilder(app, 30)
+                                : _winIconWidget(winIcon(w.path)),
+                            inQuick: app != null && isFavorite(app.id),
+                            onToggleQuick: app == null
+                                ? null
+                                : () => onToggleFavorite(app),
+                            onView: () => onWindowView(w),
+                            onClose: () => onWindowClose(w),
+                          ),
+                        );
+                      }),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// One open window on the Running page. Every window (matched Start-Menu app or
+// not) can be viewed or closed by its own handle, so two windows of the same
+// program are independent. Matched apps also get the add-to-Quick button.
+class _WindowRow extends StatelessWidget {
+  const _WindowRow({
+    required this.win,
+    required this.name,
+    required this.icon,
+    required this.inQuick,
+    required this.onToggleQuick,
+    required this.onView,
+    required this.onClose,
+  });
+  final WinItem win;
+  final String name;
+  final Widget icon;
+  final bool inQuick;
+  final VoidCallback? onToggleQuick;
+  final VoidCallback onView;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return _Pressable(
+      onTap: onView,
+      onLongPress: onView,
+      radius: BorderRadius.circular(11),
+      builder: (t) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+        decoration: BoxDecoration(
+          color: Color.lerp(_panel, _panel2, t),
+          borderRadius: BorderRadius.circular(11),
+          border: Border.all(color: Color.lerp(_line, _amber, t)!),
+        ),
+        child: Row(
+          children: [
+            ClipRRect(borderRadius: BorderRadius.circular(7), child: icon),
+            const SizedBox(width: 13),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w500,
+                          color: _textc)),
+                  if (win.title.isNotEmpty)
+                    Text(win.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                            fontFamily: _mono, fontSize: 10.5, color: _dim)),
+                ],
+              ),
+            ),
+            if (onToggleQuick != null) ...[
+              _MiniBtn(
+                onTap: onToggleQuick!,
+                filled: inQuick,
+                child: Icon(inQuick ? Icons.check : Icons.add,
+                    size: inQuick ? 16 : 17,
+                    color: inQuick ? const Color(0xFF1A1206) : _muted),
+              ),
+              const SizedBox(width: 9),
+            ],
+            _MiniBtn(
+              onTap: onView,
+              child: const Icon(Icons.desktop_windows_outlined,
+                  size: 15, color: _muted),
+            ),
+            const SizedBox(width: 9),
+            _MiniBtn(
+              onTap: onClose,
+              child: const Icon(Icons.close_rounded, size: 15, color: _red),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Widget _winIconWidget(Uint8List? bytes) => bytes != null
+    ? Image.memory(bytes,
+        width: 30,
+        height: 30,
+        gaplessPlayback: true,
+        filterQuality: FilterQuality.medium,
+        errorBuilder: (_, _, _) =>
+            const Icon(Icons.web_asset, size: 30, color: _muted))
+    : const Icon(Icons.web_asset, size: 30, color: _muted);
+
+String _prettyProc(String proc) {
+  if (proc.isEmpty) return 'Window';
+  return proc[0].toUpperCase() + proc.substring(1);
+}
+
+class _RunningEmpty extends StatelessWidget {
+  const _RunningEmpty();
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            Icon(Icons.desktop_access_disabled_outlined,
+                size: 46, color: _dim),
+            SizedBox(height: 14),
+            Text('No apps are open on your PC right now.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _muted, fontSize: 14)),
+            SizedBox(height: 6),
+            Text('Open something on the PC and it shows up here.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _dim, fontSize: 12)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------------- Live screen view ----------------
+class ScreenViewPage extends StatelessWidget {
+  const ScreenViewPage({
+    super.key,
+    required this.title,
+    required this.frame,
+    required this.status,
+  });
+
+  final String title;
+  final ValueListenable<Uint8List?> frame;
+  final ValueListenable<String> status;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF07090D),
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(6, 8, 16, 8),
+              decoration: const BoxDecoration(
+                border: Border(bottom: BorderSide(color: _line)),
+              ),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.arrow_back, color: _textc),
+                  ),
+                  Expanded(
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: _textc),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ValueListenableBuilder<String>(
+                    valueListenable: status,
+                    builder: (context, s, _) => _LivePill(status: s),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ValueListenableBuilder<Uint8List?>(
+                valueListenable: frame,
+                builder: (context, bytes, _) {
+                  if (bytes == null) {
+                    return ValueListenableBuilder<String>(
+                      valueListenable: status,
+                      builder: (context, s, _) => _ViewPlaceholder(status: s),
+                    );
+                  }
+                  return InteractiveViewer(
+                    maxScale: 4,
+                    child: Center(
+                      child: Image.memory(
+                        bytes,
+                        gaplessPlayback: true,
+                        filterQuality: FilterQuality.high,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
+              child: const Text(
+                'Live picture of this app on your PC · pinch to zoom',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontFamily: _mono, fontSize: 10.5, color: _dim),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LivePill extends StatelessWidget {
+  const _LivePill({required this.status});
+  final String status;
+  @override
+  Widget build(BuildContext context) {
+    final live = status == 'live';
+    final err = status == 'error';
+    final color = err ? _red : (live ? _green : _amber);
+    final label = err ? 'ERROR' : (live ? 'LIVE' : 'OPENING');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.6)),
+        color: color.withValues(alpha: 0.12),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 6,
+            height: 6,
+            decoration: BoxDecoration(shape: BoxShape.circle, color: color),
+          ),
+          const SizedBox(width: 6),
+          Text(label,
+              style: TextStyle(
+                  fontFamily: _mono,
+                  fontSize: 9.5,
+                  letterSpacing: 0.8,
+                  color: color)),
+        ],
+      ),
+    );
+  }
+}
+
+class _ViewPlaceholder extends StatelessWidget {
+  const _ViewPlaceholder({required this.status});
+  final String status;
+  @override
+  Widget build(BuildContext context) {
+    final err = status == 'error';
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(err ? Icons.error_outline : Icons.desktop_windows_outlined,
+              size: 46, color: err ? _red : _dim),
+          const SizedBox(height: 14),
+          Text(
+            err
+                ? "Couldn't open this app's screen."
+                : 'Opening on your PC…',
+            style: TextStyle(
+                color: err ? _red : _muted, fontSize: 14),
+          ),
+          if (!err) ...[
+            const SizedBox(height: 6),
+            const Text('The window is coming to the front on your PC.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _dim, fontSize: 12)),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
 // ---------------- Models ----------------
 class Metrics {
   const Metrics({
@@ -1430,6 +2018,29 @@ class Metrics {
   final double? ram;
   final String wifi;
   final double? temperature;
+}
+
+class WinItem {
+  const WinItem(
+      {required this.proc,
+      required this.title,
+      this.path,
+      this.appId,
+      this.hwnd = ''});
+
+  factory WinItem.fromJson(Map<String, dynamic> json) => WinItem(
+        proc: '${json['proc'] ?? ''}',
+        title: '${json['title'] ?? ''}',
+        path: json['path'] == null ? null : '${json['path']}',
+        appId: json['appId'] == null ? null : '${json['appId']}',
+        hwnd: '${json['hwnd'] ?? ''}',
+      );
+
+  final String proc;
+  final String title;
+  final String? path;
+  final String? appId;
+  final String hwnd;
 }
 
 class RemoteApp {
